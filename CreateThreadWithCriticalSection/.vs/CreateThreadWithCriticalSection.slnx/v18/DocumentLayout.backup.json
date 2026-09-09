@@ -1,0 +1,41 @@
+{
+  "Version": 1,
+  "WorkspaceRootPath": "C:\\Users\\vincg\\Desktop\\lab\\CreateThreadWithCriticalSection\\",
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{215DFE65-29CF-4C62-AD61-C6CAAC76E02C}|CreateThreadWithCriticalSection\\CreateThreadWithCriticalSection.vcxproj|C:\\Users\\vincg\\Desktop\\lab\\CreateThreadWithCriticalSection\\CreateThreadWithCriticalSection\\CreateThreadWithCriticalSection.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{215DFE65-29CF-4C62-AD61-C6CAAC76E02C}|CreateThreadWithCriticalSection\\CreateThreadWithCriticalSection.vcxproj|solutionrelative:CreateThreadWithCriticalSection\\CreateThreadWithCriticalSection.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    }
+  ],
+  "DocumentGroupContainers": [
+    {
+      "Orientation": 0,
+      "VerticalTabListWidth": 256,
+      "DocumentGroups": [
+        {
+          "DockedWidth": 200,
+          "SelectedChildIndex": 0,
+          "Children": [
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "CreateThreadWithCriticalSection.cpp",
+              "DocumentMoniker": "C:\\Users\\vincg\\Desktop\\lab\\CreateThreadWithCriticalSection\\CreateThreadWithCriticalSection\\CreateThreadWithCriticalSection.cpp",
+              "RelativeDocumentMoniker": "CreateThreadWithCriticalSection\\CreateThreadWithCriticalSection.cpp",
+              "ToolTip": "C:\\Users\\vincg\\Desktop\\lab\\CreateThreadWithCriticalSection\\CreateThreadWithCriticalSection\\CreateThreadWithCriticalSection.cpp",
+              "RelativeToolTip": "CreateThreadWithCriticalSection\\CreateThreadWithCriticalSection.cpp",
+              "ViewState": "AgIAACAAAAAAAAAAAAAwwDAAAAAuAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
+              "WhenOpened": "2026-09-09T08:52:48.74Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Bookmark",
+              "Name": "ST:0:0:{cce594b6-0c39-4442-ba28-10c64ac7e89f}"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
