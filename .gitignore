@@ -7,6 +7,7 @@
 *.o
 *.obj
 
+
 # Precompiled Headers
 *.gch
 *.pch
@@ -67,3 +68,14 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Visual Studio build output
+**/Debug/
+**/Release/
+
+# Executables
+**/*.exe
+
+# Visual Studio intermediate/build files
+**/bin/
+**/obj/
