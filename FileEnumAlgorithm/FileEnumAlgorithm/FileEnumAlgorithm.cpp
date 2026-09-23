@@ -2,165 +2,754 @@
 #include <stdio.h>
 #include <strsafe.h>
 
-#define MAX_DRIVES_NBR 26
+#define PRINT_DIR_NAME
+#define PRINT_FILE_NAME
 
-volatile LONG64 g_FileCntr = 0x00;
+/*
+ * Maximum number of simultaneous drive threads.
+ * This is no longer really important because this version
+ * targets one directory at a time.
+ */
+#define MAX_PATH_BUFFER 32768
 
-typedef struct _THREAD_PARMS {
-    LPWSTR szDirectory; // Directory path to enumerate
-} THREAD_PARMS, *PTHREAD_PARMS;
+    volatile LONG64 g_FileCntr = 0;
 
 
-BOOL FilesEnumStartForDrive(IN LPWSTR szDirectory) {
+/*
+ * Thread parameters
+ */
+typedef struct _THREAD_PARMS
+{
+    LPWSTR szDirectory;
+    DWORD dwMaxDepth;
+
+} THREAD_PARMS, * PTHREAD_PARMS;
+
+
+/*
+ * Function declarations
+ */
+BOOL FilesEnumStartForDirectory(
+    IN LPCWSTR szDirectory,
+    IN DWORD dwCurrentDepth,
+    IN DWORD dwMaxDepth
+);
+
+DWORD WINAPI FileEnumThreadFunc(
+    IN LPVOID lpParameter
+);
+
+
+/*
+ * Display program usage.
+ */
+VOID PrintUsage(
+    IN LPCWSTR szProgramName
+)
+{
+    wprintf(
+        L"\n"
+        L"FileEnumAlgorithm - Recursive file enumeration\n"
+        L"===============================================\n"
+        L"\n"
+        L"Usage:\n"
+        L"  %s <directory> <max-depth>\n"
+        L"\n"
+        L"Arguments:\n"
+        L"  <directory>   Directory to enumerate.\n"
+        L"  <max-depth>   Maximum recursion depth.\n"
+        L"\n"
+        L"Depth examples:\n"
+        L"  0  = Target directory only\n"
+        L"  1  = Target + immediate subdirectories\n"
+        L"  2  = Target + 2 levels of subdirectories\n"
+        L"  3  = Target + 3 levels of subdirectories\n"
+        L"\n"
+        L"Examples:\n"
+        L"  %s \"C:\\Users\\Alice\\Desktop\" 0\n"
+        L"  %s \"C:\\Users\\Alice\\Desktop\" 1\n"
+        L"  %s \"C:\\Users\\Alice\\Desktop\" 2\n"
+        L"  %s \"C:\\Temp\" 3\n"
+        L"\n",
+        szProgramName,
+        szProgramName,
+        szProgramName,
+        szProgramName,
+        szProgramName
+    );
+}
+
+
+/*
+ * Recursively enumerate a directory.
+ *
+ * dwCurrentDepth:
+ *      Current recursion depth.
+ *
+ * dwMaxDepth:
+ *      Maximum depth we are allowed to enter.
+ */
+BOOL FilesEnumStartForDirectory(
+    IN LPCWSTR szDirectory,
+    IN DWORD dwCurrentDepth,
+    IN DWORD dwMaxDepth
+)
+{
     HANDLE hFind = INVALID_HANDLE_VALUE;
+
     WIN32_FIND_DATAW FindFileData = { 0 };
-    WCHAR szDirBuff1[MAX_PATH] = { 0 },
-        szDirBuff2[MAX_PATH] = { 0 };
-    BOOL bResult = FALSE;
 
-    if (!szDirectory) return FALSE;
-    //Build search path
-    if (szDirectory[lstrlen(szDirectory) - 1] != L'\\') {
-        if (FAILED(StringCchPrintfW(szDirBuff1, MAX_PATH, L"% s\\ * .*", szDirectory))) {
-            goto _END_OF_FUNC;
-        }
-    }
-    else {
-        if (FAILED(StringCchPrintfW(szDirBuff1, MAX_PATH, L"% s * .*", szDirectory))) {
-            goto _END_OF_FUNC;
-        }
-    }
+    WCHAR szSearchPath[MAX_PATH_BUFFER] = { 0 };
+    WCHAR szFullPath[MAX_PATH_BUFFER] = { 0 };
 
-    if ((hFind = FindFirstFileW(szDirBuff1, &FindFileData)) == INVALID_HANDLE_VALUE)
+    HRESULT hr;
+
+    if (szDirectory == NULL || szDirectory[0] == L'\0')
         return FALSE;
 
-    do 
+
+    /*
+     * Build search pattern.
+     *
+     * C:\Test
+     *      ->
+     * C:\Test\*.*
+     */
+    if (szDirectory[lstrlenW(szDirectory) - 1] == L'\\')
     {
-        SIZE_T ccLength = lstrlenW(szDirectory); //current directory length
-        if (lstrcmpW(FindFileData.cFileName, L".") == 0 || lstrcmpW(FindFileData.cFileName, L"..") == 0)
+        hr = StringCchPrintfW(
+            szSearchPath,
+            ARRAYSIZE(szSearchPath),
+            L"%s*.*",
+            szDirectory
+        );
+    }
+    else
+    {
+        hr = StringCchPrintfW(
+            szSearchPath,
+            ARRAYSIZE(szSearchPath),
+            L"%s\\*.*",
+            szDirectory
+        );
+    }
+
+
+    if (FAILED(hr))
+    {
+        wprintf(
+            L"[!] Search path is too long: %s\n",
+            szDirectory
+        );
+
+        return FALSE;
+    }
+
+
+    /*
+     * Start enumeration.
+     */
+    hFind = FindFirstFileW(
+        szSearchPath,
+        &FindFileData
+    );
+
+
+    if (hFind == INVALID_HANDLE_VALUE)
+    {
+        DWORD dwError = GetLastError();
+
+        /*
+         * Access denied is common when enumerating some
+         * Windows directories.
+         */
+        if (dwError == ERROR_ACCESS_DENIED)
+        {
+            wprintf(
+                L"[!] Access denied: %s\n",
+                szDirectory
+            );
+        }
+        else
+        {
+            wprintf(
+                L"[!] FindFirstFileW failed for [%s] "
+                L"- Error: %lu\n",
+                szDirectory,
+                dwError
+            );
+        }
+
+        return FALSE;
+    }
+
+
+    /*
+     * Enumerate directory contents.
+     */
+    do
+    {
+        /*
+         * Ignore "." and "..".
+         */
+        if (lstrcmpW(
+            FindFileData.cFileName,
+            L".") == 0 ||
+            lstrcmpW(
+                FindFileData.cFileName,
+                L"..") == 0)
+        {
             continue;
-
-        //build full path in DirBuff2
-        if (ccLength > 0x00 && szDirectory[ccLength - 0x01] == L'\\') {
-            if (FAILED(StringCchPrintfW(szDirBuff1, MAX_PATH, L"%s%s", szDirectory, FindFileData.cFileName))) {
-                goto _END_OF_FUNC;
-            }
-        }
-        else {
-            if (FAILED(StringCchPrintfW(szDirBuff1, MAX_PATH, L"%s\\%s", szDirectory, FindFileData.cFileName))) {
-                goto _END_OF_FUNC;
-            }
         }
 
-        //check if directory
-        if (FindFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+
+        /*
+         * Build complete path.
+         */
+        if (szDirectory[lstrlenW(szDirectory) - 1] == L'\\')
+        {
+            hr = StringCchPrintfW(
+                szFullPath,
+                ARRAYSIZE(szFullPath),
+                L"%s%s",
+                szDirectory,
+                FindFileData.cFileName
+            );
+        }
+        else
+        {
+            hr = StringCchPrintfW(
+                szFullPath,
+                ARRAYSIZE(szFullPath),
+                L"%s\\%s",
+                szDirectory,
+                FindFileData.cFileName
+            );
+        }
+
+
+        if (FAILED(hr))
+        {
+            wprintf(
+                L"[!] Path too long: %s\\%s\n",
+                szDirectory,
+                FindFileData.cFileName
+            );
+
+            continue;
+        }
+
+
+        /*
+         * Is this a directory?
+         */
+        if (FindFileData.dwFileAttributes &
+            FILE_ATTRIBUTE_DIRECTORY)
         {
 #ifdef PRINT_DIR_NAME
-            wprintf(L"[DIRECTORY] %s\n", szDirBuff2);
-#endif // PRINT_DIR_NAME
-            FilesEnumStartForDrive(szDirBuff1);
-        }// it's a file
-        else {
-#ifdef PRINT_DIR_NAME
-            wprintf(L"[FILE] %s\n", szDirBuff2);
-#endif // PRINT_DIR_NAME
-            InterlockedIncrement64(&g_FileCntr);
-        }
-        //continue searching
-    } while (FindNextFileW(hFind, &FindFileData));
 
-    bResult = TRUE;
-_END_OF_FUNC:
-    if (hFind != INVALID_HANDLE_VALUE)
-        FindClose(hFind);
-    return bResult;
-}
+            wprintf(
+                L"[DIRECTORY] [Depth %lu] %s\n",
+                dwCurrentDepth + 1,
+                szFullPath
+            );
 
-VOID FileEnumThreadFunc(IN LPVOID lpParameter) {
-    PTHREAD_PARMS pThreadParms = (PTHREAD_PARMS)lpParameter;
+#endif /* PRINT_DIR_NAME */
 
-    FilesEnumStartForDrive(pThreadParms->szDirectory);
 
-    LocalFree(pThreadParms->szDirectory);
-    LocalFree(pThreadParms);
-}
-
-BOOL DrivesEnumStart() {
-    DWORD dwDriveBitMask = 0x00,
-        dwCurrentThreadCntr = 0x00;
-    HANDLE hThreadArray[MAX_DRIVES_NBR] = { 0 };
-
-    if (!(dwDriveBitMask = GetLogicalDrives()))
-        return FALSE;
-
-    for (int i = 0; i < MAX_DRIVES_NBR; i++) {
-        //check id drives exists
-        if (dwDriveBitMask & (1 << i)) {
-            DWORD dwDriveType = 0x00;
-            DWORD dwThreadId = 0x00;
-            WCHAR szDrivePath[4] = { 0 };
-            SIZE_T ccLength = 0x00;
-            PTHREAD_PARMS pThreadParms = NULL;
-
-            wsprintf(szDrivePath, L"%C:\\", L'A' + i);
-            dwDriveType = GetDriveTypeW(szDrivePath);
-
-            if (dwDriveType != DRIVE_FIXED && dwDriveType != DRIVE_REMOVABLE)
+            /*
+             * Do not follow reparse points.
+             *
+             * This prevents following junctions/symbolic links
+             * into unrelated directory trees or creating loops.
+             */
+            if (FindFileData.dwFileAttributes &
+                FILE_ATTRIBUTE_REPARSE_POINT)
+            {
                 continue;
-
-            if (!(pThreadParms = (PTHREAD_PARMS)LocalAlloc(LPTR, sizeof(THREAD_PARMS)))) {
-                printf("[!] LocalAlloc %d Failed With Error: %d\n", __LINE__, GetLastError());
-                return FALSE;
-            }
-            //Allocate mem for dir path
-            ccLength = wcslen(szDrivePath) + 0x01;
-            if (!(pThreadParms->szDirectory = (WCHAR*)LocalAlloc(LPTR, ccLength * sizeof(WCHAR)))) {
-                printf("[!] LocalAlloc for Directory %d Failed With Error: %d\n", __LINE__, GetLastError());
-                LocalFree(pThreadParms);
-                return FALSE;
-            }
-            if (FAILED(StringCchPrintfW(pThreadParms->szDirectory, ccLength, L"%s", szDrivePath))) {
-                LocalFree(pThreadParms->szDirectory);
-                LocalFree(pThreadParms);
-                return FALSE;
             }
 
-            if (!(hThreadArray[dwCurrentThreadCntr] = CreateThread(NULL, 0x00, (LPTHREAD_START_ROUTINE)FileEnumThreadFunc, pThreadParms, 0x00, &dwThreadId))) {
-                printf("[!] Failed To create new Thread For '%w' With Error: %d\n", szDrivePath, GetLastError());
-                LocalFree(pThreadParms->szDirectory);
-                LocalFree(pThreadParms);
-                return FALSE;
-            }
-            printf("[!] Create new Thread [ %d ] Targeting [ %ws ] \n", dwThreadId, szDrivePath);
 
-            dwCurrentThreadCntr++;
+            /*
+             * Only recurse when we haven't reached
+             * the maximum depth.
+             */
+            if (dwCurrentDepth < dwMaxDepth)
+            {
+                FilesEnumStartForDirectory(
+                    szFullPath,
+                    dwCurrentDepth + 1,
+                    dwMaxDepth
+                );
+            }
+        }
+        else
+        {
+#ifdef PRINT_FILE_NAME
+
+            wprintf(
+                L"[FILE] [Depth %lu] %s\n",
+                dwCurrentDepth,
+                szFullPath
+            );
+
+#endif /* PRINT_FILE_NAME */
+
+
+            /*
+             * Thread-safe global counter.
+             */
+            InterlockedIncrement64(
+                &g_FileCntr
+            );
+        }
+
+    } while (FindNextFileW(
+        hFind,
+        &FindFileData
+    ));
+
+
+    /*
+     * FindNextFileW normally ends with
+     * ERROR_NO_MORE_FILES.
+     */
+    {
+        DWORD dwError = GetLastError();
+
+        if (dwError != ERROR_NO_MORE_FILES)
+        {
+            wprintf(
+                L"[!] FindNextFileW failed in [%s] "
+                L"- Error: %lu\n",
+                szDirectory,
+                dwError
+            );
         }
     }
 
 
-    WaitForMultipleObjects(dwCurrentThreadCntr, hThreadArray, TRUE, INFINITE);
-
-    for (int i = 0; i < dwCurrentThreadCntr; i++) {
-        CloseHandle(hThreadArray[i]);
-    }
+    /*
+     * Close enumeration handle.
+     */
+    FindClose(hFind);
 
     return TRUE;
 }
 
 
-
-int main()
+/*
+ * Thread entry point.
+ */
+DWORD WINAPI FileEnumThreadFunc(
+    IN LPVOID lpParameter
+)
 {
-    printf("[#] Press <Enter> To Start ...");
-    getchar();
+    PTHREAD_PARMS pThreadParms =
+        (PTHREAD_PARMS)lpParameter;
 
 
-    DrivesEnumStart();
+    if (pThreadParms == NULL)
+        return 1;
 
-    wprintf(L"[i] Total Targeted Files : %lld\n", g_FileCntr);
 
-    printf("[#] Press <Enter> To Quit ...");
-    getchar();
+    /*
+     * Enumerate target directory.
+     */
+    FilesEnumStartForDirectory(
+        pThreadParms->szDirectory,
+        0,
+        pThreadParms->dwMaxDepth
+    );
+
+
+    /*
+     * Free allocated memory.
+     */
+    if (pThreadParms->szDirectory != NULL)
+    {
+        LocalFree(
+            pThreadParms->szDirectory
+        );
+    }
+
+
+    LocalFree(
+        pThreadParms
+    );
+
+
+    return 0;
+}
+
+
+/*
+ * Convert a command-line string to DWORD.
+ */
+BOOL ParseDepth(
+    IN LPCWSTR szDepth,
+    OUT DWORD* pdwDepth
+)
+{
+    WCHAR* pEnd = NULL;
+
+    unsigned long ulDepth;
+
+
+    if (szDepth == NULL ||
+        pdwDepth == NULL ||
+        szDepth[0] == L'\0')
+    {
+        return FALSE;
+    }
+
+
+    /*
+     * Reject negative values.
+     */
+    if (szDepth[0] == L'-')
+        return FALSE;
+
+
+    ulDepth = wcstoul(
+        szDepth,
+        &pEnd,
+        10
+    );
+
+
+    /*
+     * Make sure the entire argument was numeric.
+     */
+    if (pEnd == szDepth ||
+        *pEnd != L'\0')
+    {
+        return FALSE;
+    }
+
+
+    /*
+     * Make sure conversion didn't overflow DWORD.
+     */
+    if (ulDepth > MAXDWORD)
+        return FALSE;
+
+
+    *pdwDepth = (DWORD)ulDepth;
+
+    return TRUE;
+}
+
+
+/*
+ * Main.
+ */
+int wmain(
+    int argc,
+    wchar_t* argv[]
+)
+{
+    LPCWSTR szTargetDirectory;
+
+    DWORD dwMaxDepth = 0;
+
+    HANDLE hThread = NULL;
+
+    PTHREAD_PARMS pThreadParms = NULL;
+
+    DWORD dwThreadId = 0;
+
+    DWORD dwWaitResult;
+
+
+    /*
+     * Check command-line arguments.
+     */
+    if (argc != 3)
+    {
+        wprintf(
+            L"\n[!] Invalid number of arguments.\n"
+        );
+
+        PrintUsage(
+            argv[0]
+        );
+
+        return 1;
+    }
+
+
+    /*
+     * First argument:
+     *
+     * Target directory.
+     */
+    szTargetDirectory = argv[1];
+
+
+    /*
+     * Make sure directory isn't empty.
+     */
+    if (szTargetDirectory[0] == L'\0')
+    {
+        wprintf(
+            L"[!] Target directory cannot be empty.\n"
+        );
+
+        PrintUsage(
+            argv[0]
+        );
+
+        return 1;
+    }
+
+
+    /*
+     * Second argument:
+     *
+     * Maximum depth.
+     */
+    if (!ParseDepth(
+        argv[2],
+        &dwMaxDepth))
+    {
+        wprintf(
+            L"[!] Invalid maximum depth: %s\n",
+            argv[2]
+        );
+
+        PrintUsage(
+            argv[0]
+        );
+
+        return 1;
+    }
+
+
+    /*
+     * Verify that the target exists and is a directory.
+     */
+    {
+        DWORD dwAttributes;
+
+        dwAttributes =
+            GetFileAttributesW(
+                szTargetDirectory
+            );
+
+
+        if (dwAttributes == INVALID_FILE_ATTRIBUTES)
+        {
+            wprintf(
+                L"[!] Target does not exist or cannot be accessed:\n"
+                L"    %s\n"
+                L"    Error: %lu\n",
+                szTargetDirectory,
+                GetLastError()
+            );
+
+            return 1;
+        }
+
+
+        if (!(dwAttributes &
+            FILE_ATTRIBUTE_DIRECTORY))
+        {
+            wprintf(
+                L"[!] Target is not a directory:\n"
+                L"    %s\n",
+                szTargetDirectory
+            );
+
+            return 1;
+        }
+    }
+
+
+    /*
+     * Display configuration.
+     */
+    wprintf(
+        L"\n"
+        L"===============================================\n"
+        L" File Enumeration\n"
+        L"===============================================\n"
+        L" Target      : %s\n"
+        L" Max depth   : %lu\n"
+        L"===============================================\n"
+        L"\n",
+        szTargetDirectory,
+        dwMaxDepth
+    );
+
+
+    /*
+     * Allocate thread parameters.
+     */
+    pThreadParms =
+        (PTHREAD_PARMS)LocalAlloc(
+            LPTR,
+            sizeof(THREAD_PARMS)
+        );
+
+
+    if (pThreadParms == NULL)
+    {
+        wprintf(
+            L"[!] LocalAlloc failed - Error: %lu\n",
+            GetLastError()
+        );
+
+        return 1;
+    }
+
+
+    /*
+     * Allocate memory for target directory.
+     */
+    {
+        SIZE_T ccLength;
+
+        ccLength =
+            wcslen(szTargetDirectory) + 1;
+
+
+        pThreadParms->szDirectory =
+            (LPWSTR)LocalAlloc(
+                LPTR,
+                ccLength * sizeof(WCHAR)
+            );
+
+
+        if (pThreadParms->szDirectory == NULL)
+        {
+            wprintf(
+                L"[!] LocalAlloc for target directory failed "
+                L"- Error: %lu\n",
+                GetLastError()
+            );
+
+            LocalFree(
+                pThreadParms
+            );
+
+            return 1;
+        }
+
+
+        if (FAILED(StringCchCopyW(
+            pThreadParms->szDirectory,
+            ccLength,
+            szTargetDirectory
+        )))
+        {
+            wprintf(
+                L"[!] Failed to copy target directory.\n"
+            );
+
+            LocalFree(
+                pThreadParms->szDirectory
+            );
+
+            LocalFree(
+                pThreadParms
+            );
+
+            return 1;
+        }
+    }
+
+
+    /*
+     * Store maximum depth.
+     */
+    pThreadParms->dwMaxDepth =
+        dwMaxDepth;
+
+
+    /*
+     * Create enumeration thread.
+     */
+    hThread =
+        CreateThread(
+            NULL,
+            0,
+            FileEnumThreadFunc,
+            pThreadParms,
+            0,
+            &dwThreadId
+        );
+
+
+    if (hThread == NULL)
+    {
+        wprintf(
+            L"[!] CreateThread failed "
+            L"- Error: %lu\n",
+            GetLastError()
+        );
+
+        LocalFree(
+            pThreadParms->szDirectory
+        );
+
+        LocalFree(
+            pThreadParms
+        );
+
+        return 1;
+    }
+
+
+    wprintf(
+        L"[+] Created enumeration thread [ %lu ]\n"
+        L"\n",
+        dwThreadId
+    );
+
+
+    /*
+     * Wait for enumeration to finish.
+     */
+    dwWaitResult =
+        WaitForSingleObject(
+            hThread,
+            INFINITE
+        );
+
+
+    if (dwWaitResult == WAIT_FAILED)
+    {
+        wprintf(
+            L"[!] WaitForSingleObject failed "
+            L"- Error: %lu\n",
+            GetLastError()
+        );
+    }
+
+
+    /*
+     * Close thread handle.
+     */
+    CloseHandle(
+        hThread
+    );
+
+
+    /*
+     * Display result.
+     */
+    wprintf(
+        L"\n"
+        L"===============================================\n"
+        L" Enumeration Complete\n"
+        L"===============================================\n"
+        L" Targeted files : %lld\n"
+        L"===============================================\n"
+        L"\n",
+        g_FileCntr
+    );
+
 
     return 0;
 }

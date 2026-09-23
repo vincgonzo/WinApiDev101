@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="FileEnumAlgorithm/FileEnumAlgorithm.vcxproj" />
+  <Project Path="FileEnumAlgorithm/FileEnumAlgorithm.vcxproj" Id="5f8a16f4-26c7-4bfb-9d55-0ce5a7db6507" />
 </Solution>
