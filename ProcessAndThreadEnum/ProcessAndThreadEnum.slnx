@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="ProcessAndThreadEnum/ProcessAndThreadEnum.vcxproj" Id="ebf29ab1-ef94-4370-94c2-d43d09dd3425" />
+</Solution>
