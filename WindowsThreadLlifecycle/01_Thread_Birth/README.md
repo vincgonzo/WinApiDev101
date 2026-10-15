@@ -1,274 +1,348 @@
-# \# Windows Thread Creation: Immediate vs. Suspended Start
+\# Thread Birth
 
-# 
 
-# \## Overview
 
-# 
+This lab explores Windows thread creation using the Win32 `CreateThread` API. It compares a thread created in the normal state with one created using `CREATE\_SUSPENDED`.
 
-# This lab compares two Windows thread creation strategies using the Win32 `CreateThread` API:
 
-# 
 
-# \- \*\*Immediate start\*\* (`immediate\_start.cpp`): the worker thread is created without `CREATE\_SUSPENDED` and is eligible to run as soon as the system permits.
+The objective is to distinguish thread creation, routine entry, and actual execution scheduling.
 
-# \- \*\*Suspended start\*\* (`suspended\_start.cpp`): the worker thread is created with `CREATE\_SUSPENDED` and cannot execute its application routine until `ResumeThread` removes its suspension.
 
-# 
 
-# The goal is to understand the difference between \*\*thread creation, thread execution, and scheduling\*\*, and to learn how to distinguish documented API guarantees from observations made during debugging.
+\## Files
 
-# 
 
-# Both examples use Win32 APIs in the worker thread and deliberately use `CreateThread`. In examples where the worker uses the C/C++ runtime, `\_beginthreadex` is generally more appropriate.
 
-# 
+\- `immediate\_start.cpp` — Creates a worker without `CREATE\_SUSPENDED`.
 
-# \## Learning Objectives
+\- `suspended\_start.cpp` — Creates a worker with `CREATE\_SUSPENDED` and resumes it explicitly.
 
-# 
 
-# \- Understand what a successful `CreateThread` call guarantees.
 
-# \- Distinguish thread existence from execution of its application routine.
+\## Requirements
 
-# \- Observe thread scheduling and synchronization using Windows tools.
 
-# \- Inspect thread IDs, stacks, and startup wrappers in WinDbg.
 
-# \- Understand the limitations of snapshots, delays, and process-monitoring telemetry.
+\- Windows 10 version 1607 or later / Windows 11
 
-# \- Use synchronization primitives instead of assumptions about execution timing.
+\- x64 Visual Studio C++ build tools and Windows SDK
 
-# 
+\- Optional: WinDbg, Process Explorer, Process Monitor (Procmon)
 
-# \## Requirements
 
-# 
 
-# \- Windows 10 version 1607 or later, or Windows 11.
+Both examples use Win32 APIs in the worker thread.
 
-# \- x64 architecture recommended.
 
-# \- Visual Studio with the Windows SDK and C++ build tools.
 
-# \- Process Explorer, WinDbg, and Process Monitor (Procmon) for optional inspection.
+\## Build
 
-# 
 
-# No third-party libraries are required.
 
-# 
+Run the commands from an x64 Native Tools Command Prompt in this directory.
 
-# \## Build and Run
 
-# 
 
-# Build each program separately from an x64 Native Tools Command Prompt in the directory containing the source files.
+\*\*Immediate start\*\*
 
-# 
 
-# \### 1. Immediate Start
 
-# 
+```bat
 
-# ```bat
+cl /nologo /std:c++17 /W4 /Od /Zi /EHsc immediate\_start.cpp /Fe:immediate\_start.exe /link /DEBUG
 
-# cl /nologo /std:c++17 /W4 /Od /Zi /EHsc immediate\_start.cpp /Fe:immediate\_start.exe /link /DEBUG
+immediate\_start.exe
 
-# immediate\_start.exe
+immediate\_start.exe --auto
 
-# immediate\_start.exe --auto
+```
 
-# ```
 
-# 
 
-# \### 2. Suspended Start
+\*\*Suspended start\*\*
 
-# 
 
-# ```bat
 
-# cl /nologo /std:c++17 /W4 /Od /Zi /EHsc suspended\_start.cpp /Fe:suspended\_start.exe /link /DEBUG
+```bat
 
-# suspended\_start.exe
+cl /nologo /std:c++17 /W4 /Od /Zi /EHsc suspended\_start.cpp /Fe:suspended\_start.exe /link /DEBUG
 
-# suspended\_start.exe --auto
+suspended\_start.exe
 
-# ```
+suspended\_start.exe --auto
 
-# 
+```
 
-# The `/Od` and `/Zi` options disable optimization and generate debugging information, making source-level and stack inspection easier.
 
-# 
 
-# Each program supports an interactive exercise and an automatic mode. Use the interactive mode when you want to inspect the thread at the checkpoints.
+`/Od` disables optimization and `/Zi` generates debugging information for inspection.
 
-# 
 
-# \---
 
-# 
+\## 1. Immediate Start
 
-# \## Experiment 1: Immediate Thread Start
 
-# 
 
-# \*\*Source:\*\* `immediate\_start.cpp`
+\*\*Source:\*\* `immediate\_start.cpp`
 
-# 
 
-# \### Question
 
-# 
+\### Learning question
 
-# Can the worker execute before the creator finishes the `CreateThread` call?
 
-# 
 
-# \*\*Yes.\*\* Without `CREATE\_SUSPENDED`, the new thread can execute before `CreateThread` returns to the calling thread. It can also begin executing later. A successful API call does not guarantee a particular scheduling order.
+Can the worker execute before the creator finishes the `CreateThread` call?
 
-# 
 
-# \### Expected Behavior
 
-# 
+Yes. Without `CREATE\_SUSPENDED`, the worker may enter its routine before `CreateThread` returns. It may also start later. The API does not guarantee a scheduling order.
 
-# The program initializes shared handles and synchronization objects before creating the worker.
 
-# 
 
-# After creation, the main thread takes an atomic snapshot of the worker's entry flag. The snapshot may be either `0` or `1`.
+\### Observe
 
-# 
 
-# \- `0` means the worker had not set the flag when the snapshot was taken.
 
-# \- `1` means the worker had set the flag by the time of the snapshot.
+1\. Run the program and record the PID, TID, and entry-flag snapshot.
 
-# 
+2\. Repeat the experiment. You do not need to observe both snapshot values.
 
-# However, a value of `1` does \*\*not\*\* prove that the worker entered its routine before `CreateThread` returned. Entry may have happened between the API return and the snapshot.
+3\. Wait for the worker-generated entry event.
 
-# 
+4\. Open Process Explorer and locate the worker under \*\*Properties → Threads\*\*.
 
-# The worker also signals an event when it enters its routine. Waiting for that event establishes that entry has occurred by the time the wait completes.
+5\. Inspect its stack.
 
-# 
+6\. Press Enter to signal the stop event and join the worker.
 
-# This distinction illustrates the difference between an observation and a conclusion supported by that observation.
 
-# 
 
-# \### Exercise
+The entry snapshot may be `0` or `1`. A value of `1` does not prove that entry happened before `CreateThread` returned; entry could have occurred between the API return and the snapshot.
 
-# 
 
-# 1\. Run `immediate\_start.exe`.
 
-# 2\. Record the entry-flag snapshot, process ID (PID), and thread ID (TID).
+The worker-generated event establishes that entry has occurred when the main thread's wait completes.
 
-# 3\. Repeat the experiment several times. You do not need to observe both possible snapshot values.
 
-# 4\. Wait for the worker-generated entry event.
 
-# 5\. In Process Explorer, locate the process using its printed PID and open \*\*Properties → Threads\*\*.
+The worker remains available for inspection for up to 120 seconds after entry. The expected exit code is `42`.
 
-# 6\. Locate the worker using its printed TID and inspect its stack.
 
-# 7\. Compare the stack with the suspended-start experiment after resumption.
 
-# 8\. Press Enter to signal the stop event.
+\### WinDbg
 
-# 9\. Confirm that the main thread joins the worker and reads its exit code, `42`.
 
-# 
 
-# The worker remains available for inspection for up to 120 seconds after entry. No `ResumeThread` call is used in this example.
+```text
 
-# 
+bu immediate\_start!WorkerMain
 
-# \---
+g
 
-# 
+```
 
-# \## Experiment 2: Explicitly Suspended Thread Start
 
-# 
 
-# \*\*Source:\*\* `suspended\_start.cpp`
+The breakpoint may be reached before the creator prints its first post-creation message.
 
-# 
 
-# \### Question
 
-# 
+Useful commands:
 
-# Does a successful thread creation call mean that the application's thread routine has executed?
 
-# 
 
-# \*\*No.\*\* With `CREATE\_SUSPENDED`, `CreateThread` returns a valid thread handle and TID, but the worker cannot reach `WorkerMain` until its suspend count reaches zero.
+\- `\~` — List debugger threads.
 
-# 
+\- `k` — Display the current thread's stack.
 
-# \### Expected Behavior
+\- `r` — Display registers.
 
-# 
+\- `!teb` — Inspect the current thread's TEB.
 
-# The program creates the worker using `CREATE\_SUSPENDED`.
+\- `g` — Continue execution.
 
-# 
 
-# At the first checkpoint:
 
-# 
+\## 2. Suspended Start
 
-# \- The thread exists and has a valid handle and TID.
 
-# \- The entry flag, `g\_workerEntered`, remains `0`.
 
-# \- The worker has not entered `WorkerMain`.
+\*\*Source:\*\* `suspended\_start.cpp`
 
-# 
 
-# Calling `ResumeThread` reduces the thread's suspend count. Its return value is the \*\*previous\*\* suspend count. A return value of `1` indicates that this call removed the last suspension.
 
-# 
+\### Learning question
 
-# The return from `ResumeThread` does not, by itself, prove that the worker has executed its application routine. The worker-generated entry event provides that evidence.
 
-# 
 
-# \### Exercise
+Does successful thread creation prove that the application's thread routine has executed?
 
-# 
 
-# 1\. Run `suspended\_start.exe`.
 
-# 2\. Leave the first checkpoint open.
+No. With `CREATE\_SUSPENDED`, `CreateThread` returns a valid handle and TID, but the worker cannot enter `WorkerMain` until its suspend count reaches zero.
 
-# 3\. Record the PID, TID, thread handle, and zero entry flag.
 
-# 4\. Open Process Explorer and navigate to \*\*Properties → Threads\*\*.
 
-# 5\. Locate the worker by its printed TID.
+\### Observe
 
-# 6\. Remember that seeing a thread in the list proves its existence, not that its application routine has executed.
 
-# 7\. Press Enter to resume the worker.
 
-# 8\. Wait for the entry event.
+1\. Run the program and leave the first checkpoint open.
 
-# 9\. At the second checkpoint, inspect the worker's stack.
+2\. Record the PID, TID, handle, and zero entry flag.
 
-# 10\. Press Enter to signal the stop event and join the worker.
+3\. Locate the worker in Process Explorer under \*\*Properties → Threads\*\*.
 
-# 11\. Confirm the worker's exit code.
+4\. Press Enter to resume the worker.
 
-# 
+5\. Wait for the entry event and inspect the worker's stack.
 
-# The worker normally returns `42`. If inspection exceeds the 120-second safety timeout after entry, exit
+6\. Press Enter to stop the worker and join it.
+
+
+
+A listed thread proves existence, not execution of its application routine.
+
+
+
+`ResumeThread` returns the previous suspend count. A return value of `1` means the call removed the last suspension. It does not prove that `WorkerMain` has already executed.
+
+
+
+The worker normally returns `42`. If inspection exceeds the 120-second safety timeout after entry, exit code `124` is expected.
+
+
+
+\### WinDbg
+
+
+
+At the initial debugger break:
+
+
+
+```text
+
+.symfix
+
+.sympath+ C:\\path\\to\\this\\directory
+
+.reload
+
+bu suspended\_start!WorkerMain
+
+g
+
+```
+
+
+
+At the first console checkpoint, press Enter to resume the worker and trigger the breakpoint.
+
+
+
+Use `\~\~\[HEX\_TID]s` to select the worker by its hexadecimal OS TID, without the `0x` prefix. Debugger thread indexes are not OS thread IDs.
+
+
+
+The stack may contain Windows startup wrappers such as `BaseThreadInitThunk` and `RtlUserThreadStart`. Exact frames vary. Use `g` to continue execution before interacting with the console.
+
+
+
+For direct `ETHREAD` or `KTHREAD` inspection, use a separate kernel-debugging VM and follow `TOOLS.md`. User-mode `!teb` does not display an `ETHREAD`.
+
+
+
+\## Procmon and Scheduling
+
+
+
+Start Procmon capture before launching the program. Filter on the executable name and inspect `Thread Create` and `Thread Exit` operations.
+
+
+
+Procmon provides thread-lifecycle telemetry, not a trace of the worker's first user-mode instruction or a complete scheduler history.
+
+
+
+WPR/WPA can help correlate thread running intervals. Precise instruction-level ordering requires appropriately placed instrumentation or debugger evidence.
+
+
+
+Debugger breaks and instrumentation can change timing. Internal thread-creation paths may also vary across Windows versions.
+
+
+
+\## Comparison
+
+
+
+| Property | Immediate start | Suspended start |
+
+|---|---|---|
+
+| Creation flag | `0` | `CREATE\_SUSPENDED` |
+
+| Thread exists after successful creation | Yes | Yes |
+
+| Worker may enter before `CreateThread` returns | Yes | No, while suspended |
+
+| Entry flag at initial observation | `0` or `1` | `0` |
+
+| Explicit `ResumeThread` required | No | Yes |
+
+| Entry event used as evidence | Yes | Yes |
+
+| Typical worker exit code | `42` | `42` |
+
+
+
+\## Analyst Takeaways
+
+
+
+\- \*\*Creation is not execution.\*\* A valid handle and TID do not prove routine entry.
+
+\- \*\*Use synchronization instead of delays.\*\* An event provides stronger evidence of progress than a short `Sleep`.
+
+\- \*\*Initialize shared state first.\*\* A runnable worker may access shared data before the creator executes its next statement.
+
+\- \*\*Distinguish observation from inference.\*\* A snapshot cannot establish an exact ordering of earlier events.
+
+\- \*\*Account for observer effects.\*\* Debugging can alter scheduling and timing.
+
+\- \*\*Separate API guarantees from implementation details.\*\* Internal Windows behavior can vary between versions.
+
+
+
+\## Check Yourself
+
+
+
+1\. Which observation proves thread existence?
+
+2\. Which observation proves entry into `WorkerMain`?
+
+3\. Why is an event stronger evidence than a short `Sleep`?
+
+4\. Can an entry snapshot of `1` prove that entry preceded the return of `CreateThread`?
+
+5\. What does a return value of `1` from `ResumeThread` establish?
+
+6\. What can Procmon prove about thread creation, and what remains unproven?
+
+
+
+\## References
+
+
+
+\- \[CreateThread](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createthread)
+
+\- \[ResumeThread](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-resumethread)
+
+\- \[WaitForSingleObject](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject)
+
+\- \[SetEvent](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-setevent)
 
