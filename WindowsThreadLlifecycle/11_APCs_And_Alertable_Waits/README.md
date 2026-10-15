@@ -1,273 +1,177 @@
-APCs and Alertable Waits on Windows
+# APCs and Alertable Waits on Windows
 
-A hands-on Windows debugging lab demonstrating how ordinary user-mode Asynchronous Procedure Calls (APCs) behave when a target thread enters an alertable wait versus a non-alertable wait.
+**Companions:** `alertable_wait.cpp` and `non_alertable_wait.cpp`  
+**Navigation:** Training overview · Tool setup
 
-Table of Contents
-Overview
-Learning Objectives
-Examples
-Requirements
-Build and Run
-Experiment 1: Alertable Wait
-Experiment 2: Non-Alertable Wait
-Side-by-Side Comparison
-Process Explorer and Procmon
-WinDbg Investigation
-Implementation and Safety Notes
-Learner Questions
-Official References
-Overview
+## Learning objectives
 
-This lab compares two minimal C++ programs that queue an ordinary user APC using QueueUserAPC and demonstrate how the target thread's wait state affects callback delivery.
+Understand how ordinary user-mode Asynchronous Procedure Calls (APCs) are queued and delivered to an existing Windows thread.
 
-The examples share the same general structure: a main thread creates a worker, the worker signals that it has entered the controlled execution sequence, and main queues exactly one APC after observing that signal.
+This exercise compares two implementations:
 
-The intentional difference is the second argument to SleepEx:
+- **Alertable wait:** An ordinary user APC executes when the target worker enters an alertable wait.
+- **Non-alertable wait:** An ordinary user APC remains pending when the target worker enters a non-alertable wait and is discarded when the worker exits.
 
-TRUE: the worker enters an alertable wait and can execute the queued APC.
-FALSE: the worker enters a non-alertable wait and does not execute the queued APC during that wait.
+Both implementations queue exactly one APC using `QueueUserAPC`. The intentional delivery-rule difference is the second argument passed to `SleepEx`.
 
-The experiments demonstrate that successful APC queuing does not guarantee callback execution. Delivery depends on the target thread reaching an appropriate delivery opportunity.
+```cpp
+SleepEx(2000, TRUE);  // Alertable wait
+SleepEx(2000, FALSE); // Non-alertable wait
+```
 
-Learning Objectives
+The key distinction is that **successful APC queuing does not guarantee callback execution**. An ordinary user APC requires an appropriate delivery opportunity on its target thread.
 
-By completing this lab, you will learn how to:
+## Repository structure
 
-Distinguish APC queuing from APC delivery and callback execution.
-Compare alertable and non-alertable SleepEx behavior.
-Verify which thread executes an APC callback.
-Inspect thread state and call stacks using Process Explorer and WinDbg.
-Understand why a successful QueueUserAPC return value is not proof of execution.
-Recognize the limitations of coarse snapshots and CPU sampling when investigating short-lived callbacks.
-Examples
-File	Wait behavior	Expected callback count
-alertable_wait.cpp	SleepEx(2000, TRUE)	1
-non_alertable_wait.cpp	SleepEx(2000, FALSE)	0
+```text
+11_APCs_And_Alertable_Waits/
+├── README.md
+├── alertable_wait.cpp
+└── non_alertable_wait.cpp
+```
 
-Both programs use a benign, image-backed callback named BenignApc. The callback increments a counter using Interlocked operations and records its executing thread ID.
+## Environment and build
 
-Neither example uses remote process injection, payloads, generated code, private executable memory, special user APCs, or kernel APC experiments.
+Requirements: Windows 10 version 1607 or later, or Windows 11, with the x64 Windows SDK and C/C++ runtime.
 
-Requirements
-Windows 10 version 1607 or later, or Windows 11.
-An x64 Windows SDK and C++ runtime.
-Visual Studio or an x64 Native Tools Command Prompt.
-WinDbg for callback and thread-context inspection.
-Optional: Process Explorer, Process Monitor (Procmon), and Windows Performance Recorder/Analyzer (WPR/WPA).
+Open an **x64 Native Tools Command Prompt** in the directory containing the source files.
 
-The programs use CreateThread because the worker and callback make Win32 calls only. Console input and CRT output remain in the main thread.
+### Build and run the alertable implementation
 
-Thread naming uses runtime resolution of SetThreadDescription in KernelBase.dll to support Windows 10 version 1607 compatibility.
-
-No third-party libraries or shared training headers are required.
-
-Build and Run
-
-Run these commands from the directory containing the source files in an x64 Native Tools Command Prompt for Visual Studio.
-
-Alertable example
+```bat
 cl /nologo /std:c++17 /W4 /Od /Zi /EHsc alertable_wait.cpp /Fe:alertable_wait.exe /link /DEBUG
 alertable_wait.exe
 alertable_wait.exe --auto
+```
 
-Non-alertable example
+### Build and run the non-alertable implementation
+
+```bat
 cl /nologo /std:c++17 /W4 /Od /Zi /EHsc non_alertable_wait.cpp /Fe:non_alertable_wait.exe /link /DEBUG
 non_alertable_wait.exe
 non_alertable_wait.exe --auto
+```
 
-Visual Studio configuration
+For Visual Studio, create an x64 Console App, disable precompiled headers, replace the generated source with the corresponding file, and select C++17, `/Od`, `/Zi`, and linker `/DEBUG`. Keep the Console subsystem and the matching executable/PDB.
 
-For either example:
+Neither program requires third-party packages or shared training headers. Both resolve `SetThreadDescription` dynamically from `KernelBase.dll` to support the stated Windows compatibility target.
 
-Create an x64 Console App.
-Disable precompiled headers and remove the generated source file.
-Add only the selected example's .cpp file.
-Enable C++17, /Od, and /Zi.
-Enable linker /DEBUG and retain the matching PDB.
-Keep the Console subsystem selected.
+### Execution modes
 
-Build and debug each example independently.
+| Mode | Behaviour |
+|---|---|
+| Normal | Pauses at a controlled observation gate for inspection with Process Explorer or WinDbg. |
+| `--auto` | Skips the interactive checkpoint and continues automatically. |
 
-Execution modes
-Normal mode: pauses at a controlled observation gate so you can inspect the worker before releasing it.
-Automatic mode (--auto): skips the input prompt and continues automatically.
+The automatic runs are designed to finish within the exercise's 20-second budget under normal scheduling. Entry and join waits are each capped at six seconds. The automatic gate has a six-second limit, while normal-mode gate inspection is capped at 120 seconds.
 
-Entry and join waits are each capped at six seconds. The automatic gate has a six-second limit, while normal-mode gate inspection is capped at 120 seconds. Under normal scheduling, both exercises fit within a 20-second execution budget.
+These are not hard real-time guarantees. Debugger pauses, system load, and scheduler delays can affect execution.
 
-These are timeout limits, not real-time guarantees. Debugger pauses and scheduler delays can affect execution.
+Both programs return process exit code `0` on success and `1` on an API failure or violated invariant.
 
-Experiment 1: Alertable Wait
+## Experiment 1 — An ordinary APC runs on its alertable target
 
-Source: alertable_wait.cpp
+**Source:** [`alertable_wait.cpp`](alertable_wait.cpp)
 
-Purpose
+### Purpose
 
-Observe one ordinary user APC executing on an existing worker thread—not on the queuing main thread and not on a newly created callback thread.
+Observe one ordinary user APC delivered on an existing worker—not on the queuing main thread and not on a newly created callback thread.
 
-The worker uses:
+The callback, `BenignApc`, is a normal image-backed function compiled into the executable. It records its executing thread ID and increments a counter using Interlocked operations.
 
-SleepEx(2000, TRUE);
+There is no payload, remote process, generated code, private executable memory, special user APC, or kernel APC experiment.
 
-Controlled sequence
-Main names itself alertable-main and creates a worker named alertable-target.
-The program prints the process ID (PID) and thread IDs (TIDs) in decimal and hexadecimal.
-The worker signals actual entry before waiting on a non-alertable release gate.
-Main observes the entry event and queues exactly one APC using QueueUserAPC.
-Main checks that the callback count is still zero while the gate remains closed.
-In normal mode, the program pauses so you can inspect the target thread and set a debugger breakpoint.
-Press Enter to release the gate.
-The worker enters SleepEx(2000, TRUE), dispatches the pending callback, and returns from the wait.
-The worker exits, and main joins it before reading the final results or releasing the context and handles.
+### Controlled sequence
 
-Waiting for actual worker entry before queuing the APC excludes the documented special timing case in which an APC queued before a thread starts can be delivered when that thread begins execution.
+1. Main names itself `alertable-main` and creates a worker named `alertable-target`.
+2. The program prints the process ID (PID) and thread IDs (TIDs) in decimal and hexadecimal.
+3. The worker signals actual entry before waiting on a non-alertable release gate.
+4. Main observes the entry event before queuing exactly one APC.
+5. Main verifies that the callback count remains zero while the gate is closed.
+6. In normal mode, the program pauses so the target thread can be inspected and a callback breakpoint can be installed.
+7. Press Enter to release the gate.
+8. The worker enters `SleepEx(2000, TRUE)`, dispatches the pending callback, and returns from the wait.
+9. The worker exits. Main joins it before reading the results or releasing the context and handles.
 
-Expected results
-Observation	Expected value
-APCs queued	1
-Callback count at the closed gate	0
-Final callback count	1
-SleepEx return value	WAIT_IO_COMPLETION (0x000000c0)
-Callback TID	Equal to target TID
-Callback TID versus main TID	Different
-Process exit code	0 on success
+Waiting for actual worker entry before queuing the APC excludes the documented timing case in which an APC queued before a thread starts can be delivered when that thread begins execution.
 
-The callback records its executing TID and increments the counter using Interlocked operations.
+### Expected results
 
-Important timing detail
+| Observation | Expected value |
+|---|---|
+| APCs queued | 1 |
+| Callback count at the closed gate | 0 |
+| Final callback count | 1 |
+| `SleepEx` return value | `WAIT_IO_COMPLETION` (`0x000000c0`) |
+| Callback TID | Equal to target TID |
+| Callback TID versus main TID | Different |
+| Process exit code | 0 on success |
 
-A pending APC can execute as soon as the worker enters an alertable wait. Therefore, the requested two-second sleep may return almost immediately.
+### Why the alertable wait can return early
 
-WAIT_IO_COMPLETION indicates that the alertable wait was interrupted by APC or I/O completion; it does not mean the requested delay expired. The program does not assert an exact elapsed time.
+A pending APC can execute as soon as the worker enters an alertable wait. The requested two-second sleep therefore does not necessarily last two seconds.
 
-Experiment 2: Non-Alertable Wait
+`WAIT_IO_COMPLETION` indicates that the alertable wait was interrupted by APC or I/O completion. It does not mean that the requested delay expired.
 
-Source: non_alertable_wait.cpp
+No exact elapsed time is asserted.
 
-Purpose
+### Inspect with Process Explorer
 
-Demonstrate that a successful QueueUserAPC call does not prove that the callback executed.
+At the release-gate checkpoint:
 
-The worker uses:
+1. Open the process properties for the printed PID.
+2. Select **Threads**.
+3. Locate the worker using its printed decimal TID.
+4. Inspect its stack.
 
-SleepEx(2000, FALSE);
+The worker should be approaching or inside the event wait.
 
+Do not expect a later GUI refresh to capture `BenignApc`. The callback is short-lived and can finish before the next refresh. Use WinDbg for direct evidence of callback execution.
 
-It does not enter another alertable wait before exiting.
+### Inspect with Procmon
 
-Controlled sequence
-Main names itself nonalertable-main and creates a worker named nonalertable-target.
-The program prints the PID and thread IDs in decimal and hexadecimal.
-The worker records its TID, signals the entry event, and waits on the non-alertable release gate.
-Main observes the entry event and queues exactly one APC.
-Main confirms that the callback count remains zero while the gate is closed.
-In normal mode, the program pauses so you can inspect the worker.
-Press Enter to open the gate.
-The worker calls SleepEx(2000, FALSE), records the return value, and exits without another wait.
-Main joins the worker before reading the final record or releasing the context and handles.
-Expected results
-Observation	Expected value
-APCs queued	1
-Callback count at the closed gate	0
-Final callback count	0
-SleepEx return value	0
-Callback TID	0 (not recorded)
-Worker exit code	0 on success
+Capture process and thread activity from process startup.
 
-The pending APC is discarded when the worker thread exits. Main does not cancel the APC.
+Procmon can show the worker's creation and eventual exit. Queuing or delivering an APC does not create a new thread specifically for the callback.
 
-A callback TID of zero means that no callback execution was recorded; it is not the worker's actual TID.
+- The worker is created by `CreateThread`.
+- An APC callback executes within an existing target thread when delivered.
+- Other unrelated process threads may exist.
+- Procmon thread events are not a complete APC-delivery trace.
 
-The expected successful process exit code is 0. API failures or violated program invariants result in exit code 1.
+The recorded callback TID and a breakpoint identify the actual execution context more directly than a thread-creation snapshot.
 
-Important interpretation
+### Inspect with WinDbg
 
-The result does not mean QueueUserAPC failed. The APC was queued successfully, but the worker never reached an alertable wait before terminating.
+Launch the normal executable under x64 WinDbg with its matching PDB.
 
-An ordinary user APC does not execute merely because its target thread is sleeping.
-
-Side-by-Side Comparison
-
-The two experiments differ in one intentional delivery-rule change: the Boolean argument to SleepEx.
-
-Property	Alertable example	Non-alertable example
-Source	alertable_wait.cpp	non_alertable_wait.cpp
-Wait call	SleepEx(2000, TRUE)	SleepEx(2000, FALSE)
-APC queued	One	One
-Worker entered before queuing	Yes	Yes
-Callback executes	Yes	No
-Final callback count	1	0
-Wait return value	WAIT_IO_COMPLETION	0
-Callback TID	Target thread's TID	0, not recorded
-Pending APC after worker exits	Already delivered	Discarded on thread exit
-Core conclusion
-
-Queuing is not delivery, and delivery is not established by queuing success alone.
-
-The alertable example establishes execution using the callback counter, the recorded callback TID, the wait return value, and a debugger breakpoint. The non-alertable example demonstrates the contrasting outcome: the queued callback is not executed before the worker exits.
-
-Process Explorer and Procmon
-Process Explorer
-
-Use the PID and TIDs printed by the program to locate the target worker.
-
-Open the process properties and select the Threads tab.
-Identify the worker by its printed decimal TID.
-Inspect its stack while the program is paused at the release gate.
-
-At the gate, the worker should be approaching or inside the event wait. After release, it may move into SleepEx and exit.
-
-For the alertable example, do not expect a later GUI refresh to capture BenignApc. The callback is short-lived and can finish before the next refresh. A breakpoint inside the callback provides more direct evidence.
-
-Process Monitor (Procmon)
-
-Capture process and thread activity starting from process startup.
-
-Procmon can show the worker's original creation and eventual exit. APC queuing and delivery do not create a separate thread just for the callback.
-
-Keep these limitations in mind:
-
-The worker is created by CreateThread, not by QueueUserAPC.
-APC callbacks execute within an existing target thread when delivered.
-Other unrelated process threads may exist.
-Procmon thread events are not a complete APC-delivery trace.
-The absence of a new thread-creation event does not establish whether a callback executed.
-
-Use the program's recorded results and WinDbg to establish callback execution.
-
-WinDbg Investigation
-
-Use x64 WinDbg to inspect the thread context and compare the two examples.
-
-Replace the symbol path below with the actual directory containing your training sources if necessary.
-
-1. Alertable example: stop inside the callback
-
-Launch alertable_wait.exe under WinDbg in normal mode.
-
+```text
 .symfix
 .sympath+ C:\training\11_APCs_And_Alertable_Waits
 .reload
 x alertable_wait!*BenignApc*
 bu alertable_wait!BenignApc
 g
+```
 
+At the queued-but-gated console prompt, optionally break into the debugger and inspect the target before releasing it.
 
-At the queued-but-gated console prompt, you can break into the debugger and inspect the worker before releasing the gate:
-
+```text
 ~
 ~~[HEX_TID]s
 k
 g
+```
 
+Replace `HEX_TID` with the printed target TID in hexadecimal, without the `0x` prefix.
 
-Replace HEX_TID with the printed target TID in hexadecimal, without the 0x prefix.
+The `~` command displays debugger thread indexes, which are not OS TIDs. For example, `~2s` selects debugger thread index 2, while `~~[HEX_TID]s` selects a thread by its OS TID.
 
-Important: WinDbg thread indexes are not operating-system thread IDs. For example, ~2s selects debugger thread index 2, whereas ~~[HEX_TID]s selects the operating-system thread with the specified TID.
+Continue with `g`, then press Enter in the console.
 
-Continue the debugger with g, then press Enter in the console to release the gate.
+At the `BenignApc` breakpoint, inspect the executing context.
 
-When the debugger stops inside BenignApc, inspect the executing context:
-
+```text
 ~.
 k
 r rip
@@ -276,40 +180,111 @@ lm
 !address @rip
 dv /t
 g
-
+```
 
 Expected evidence:
 
-The current OS TID is the worker's TID.
-The instruction pointer resolves to the callback's image-backed code.
-The stack may include an APC dispatcher such as ntdll!KiUserApcDispatcher, wait-related frames, and ApcTarget.
+- The current OS TID matches the worker's TID.
+- The instruction pointer resolves to the callback's image-backed code.
+- The stack may include an APC dispatcher such as `ntdll!KiUserApcDispatcher`, wait-related frames, and `ApcTarget`.
 
 Exact stack frames and unwind visibility vary by Windows build and available symbols.
 
-If you also want to inspect SleepEx, you can set a breakpoint on KERNELBASE!SleepEx. At x64 function entry, ECX should contain 2000 and EDX should contain 1:
+If needed, also break on `KERNELBASE!SleepEx`.
 
+```text
 bu KERNELBASE!SleepEx
 g
 r ecx edx
 k
+```
 
+At x64 function entry, ECX should contain `2000` and EDX should contain `1` (`TRUE`).
 
-The callback breakpoint is the reliable point at which to inspect callback execution; a later GUI snapshot may miss it.
+The callback breakpoint is the reliable moment to inspect the callback, not an assumption about a later stack snapshot.
 
-2. Non-alertable example: verify that the callback breakpoint does not fire
+## Experiment 2 — A queued APC does not run during an ordinary sleep
 
-Launch non_alertable_wait.exe under WinDbg in normal mode.
+**Source:** [`non_alertable_wait.cpp`](non_alertable_wait.cpp)
 
+### Purpose
+
+Demonstrate that a successful `QueueUserAPC` call is not evidence that its callback executed.
+
+Main queues one ordinary user APC to an already-started worker. The worker subsequently calls `SleepEx(2000, FALSE)`, never enters a later alertable wait, and exits.
+
+The expected callback count is zero.
+
+The callback is a benign, image-backed function compiled into the executable. It increments a counter and records the executing TID if called.
+
+There is no remote process, payload, generated code, private executable memory, or special user APC.
+
+### Controlled sequence
+
+1. Main names itself `nonalertable-main` and creates a worker named `nonalertable-target`.
+2. The program prints the PID and TIDs in decimal and hexadecimal.
+3. The worker records its TID, signals the entry event, and waits on a non-alertable release gate.
+4. Main observes the entry event and calls `QueueUserAPC` exactly once.
+5. Main verifies that the callback count remains zero while the gate is closed.
+6. In normal mode, the program pauses so the worker can be inspected.
+7. Press Enter to open the gate.
+8. The worker calls `SleepEx(2000, FALSE)`, records the return value, and exits without another wait.
+9. Main joins the worker before reading the final record or releasing the context and handles.
+
+Waiting for actual worker entry before queuing the APC excludes the documented pre-start delivery case.
+
+### Expected results
+
+| Observation | Expected value |
+|---|---|
+| APCs queued | 1 |
+| Callback count at the closed gate | 0 |
+| Final callback count | 0 |
+| `SleepEx` return value | `0` |
+| Callback TID | `0` (not recorded) |
+| Worker exit code | 0 on success |
+
+A callback TID of zero means that no callback execution was recorded. It is not the worker's actual TID.
+
+The pending APC is discarded when the worker exits. Main does not cancel the APC.
+
+API failures or violated program invariants result in an exit code of `1`.
+
+### Inspect with Process Explorer
+
+At the release-gate checkpoint:
+
+1. Open the process properties for the printed PID.
+2. Select **Threads**.
+3. Identify the target using its decimal TID.
+4. Inspect its stack.
+
+The worker should be approaching or inside the gate's event wait. After release, it can instead be in `SleepEx` before exiting. Refresh timing may miss this brief phase entirely.
+
+### Inspect with Procmon
+
+Capture process and thread activity from startup.
+
+Procmon can corroborate worker creation and exit, but it is not a complete APC-delivery trace.
+
+The absence of another thread-creation event does not establish whether the callback executed. Use the final callback count, recorded TID, joined worker, and debugger breakpoint as the primary evidence.
+
+### Inspect with WinDbg
+
+Launch the normal executable under x64 WinDbg.
+
+```text
 .symfix
 .sympath+ C:\training\11_APCs_And_Alertable_Waits
 .reload
 x non_alertable_wait!*BenignApc*
 bu non_alertable_wait!BenignApc
 g
+```
 
+At the queued-but-gated console prompt, break into the debugger.
 
-At the queued-but-gated console prompt, break into the debugger:
-
+```text
 ~
 ~~[HEX_TID]s
 k
@@ -317,82 +292,102 @@ r rip
 ln @rip
 bu KERNELBASE!SleepEx
 g
+```
 
-
-Replace HEX_TID with the worker's printed hexadecimal TID, without the 0x prefix.
+Replace `HEX_TID` with the worker's printed hexadecimal TID, without the `0x` prefix.
 
 Continue the debugger before pressing Enter in the console.
 
-At the SleepEx breakpoint, inspect the x64 argument registers and stack:
+At the `SleepEx` breakpoint, inspect the arguments and stack.
 
+```text
 r ecx edx
 k
 g
+```
 
+At x64 function entry:
 
-At function entry:
+- ECX should contain `2000` (`0x7d0`).
+- EDX should contain `0`, representing `FALSE`.
 
-ECX should contain 2000 (0x7d0).
-EDX should contain 0, representing FALSE.
-
-The BenignApc breakpoint should not be reached during this run because the worker never enters an alertable wait.
+The `BenignApc` breakpoint should not be reached during this run because the worker never becomes alertable.
 
 If the Windows export resolves through a different symbol path, use:
 
+```text
 x KERNELBASE!*SleepEx*
-
+```
 
 Then set the breakpoint on the resolved function.
 
-Debugger breaks perturb timing. A paused or stale run can exceed the gate timeout, so restart the exercise if necessary.
+Debugger breaks perturb timing. A stale run can exceed the gate timeout, so restart the exercise if necessary.
 
-Implementation and Safety Notes
-Ordinary user APC delivery
+## Direct comparison
 
-These examples concern ordinary user APCs queued with QueueUserAPC. They do not demonstrate kernel APCs or the newer special user APC mechanisms, which have different delivery rules.
+| Property | Alertable wait | Non-alertable wait |
+|---|---|---|
+| Source file | `alertable_wait.cpp` | `non_alertable_wait.cpp` |
+| Wait call | `SleepEx(2000, TRUE)` | `SleepEx(2000, FALSE)` |
+| APCs queued | 1 | 1 |
+| Worker entered before queuing | Yes | Yes |
+| Callback executes | Yes | No |
+| Final callback count | 1 | 0 |
+| Wait return value | `WAIT_IO_COMPLETION` | `0` |
+| Callback TID | Target TID | `0`, not recorded |
+| Pending APC at worker exit | Already delivered | Discarded |
 
-A successful queue operation establishes that queuing succeeded; it does not independently establish callback execution.
+The examples use the same general worker and callback design to isolate the effect of the alertable-wait flag.
 
-Thread and callback lifetime
+**Key takeaway:** An ordinary user APC can execute when its target thread enters an alertable wait. Queuing an APC successfully does not guarantee delivery, and an ordinary sleep is not an alertable delivery opportunity.
 
-The worker and callback make Win32 calls only. Main owns CRT console output and input.
+## Caveats and limitations
+
+### APC delivery rules
+
+These examples concern ordinary user APCs queued with `QueueUserAPC`. They do not demonstrate kernel APCs or special user APC mechanisms, which have different delivery rules.
+
+### Thread and callback lifetime
+
+The callback executes within an existing thread context. Production callback code must account for reentrancy, object lifetimes, synchronization, and which waits permit delivery.
 
 Both examples join the worker before reading the final results or releasing the associated context and handles. The callback does not recursively enter another alertable wait.
 
-In production code, callbacks executing in an existing thread context require careful consideration of reentrancy, object lifetimes, synchronization, and which waits permit delivery.
+### Timing and observation
 
-Timing and observation limits
-The requested two-second sleep is not an exact elapsed-time guarantee in the alertable example.
-Scheduler delays and debugger pauses can invalidate timing expectations.
-Optional WPR/WPA CPU sampling may miss the entire callback because its execution can be extremely brief.
-Missing CPU samples do not establish non-delivery.
-Seeing image-backed instructions establishes code provenance, not a general behavioral verdict.
-User-mode WinDbg commands such as k, ~, and !address do not directly expose kernel ETHREAD or KTHREAD objects.
+- The requested two-second sleep is not an exact elapsed-time guarantee in the alertable example.
+- Debugger pauses and scheduler delays can invalidate timing expectations.
+- WPR/WPA CPU sampling may miss the entire callback because it is short-lived.
+- Missing CPU samples do not establish non-delivery.
+- Image-backed instructions establish code provenance, not a general behavioral verdict.
+- User-mode commands such as `k`, `~`, and `!address` do not directly expose kernel `ETHREAD` or `KTHREAD` objects.
 
-For these exercises, the joined counter, recorded TID, wait return value, and callback breakpoint provide more useful evidence than a coarse stack snapshot alone.
+A callback breakpoint combined with the joined counter, recorded TID, and wait return value provides stronger evidence than a coarse stack snapshot alone.
 
-Learner Questions
+## Learner questions
 
-Use these questions to check your understanding.
+1. Why does the callback count remain zero while the release gate is closed in both examples?
+2. Why can the alertable two-second sleep return almost immediately?
+3. What does a successful `QueueUserAPC` call prove, and what does it not prove?
+4. Why must main observe actual worker entry before queuing the APC?
+5. Which observations establish that the callback ran on the target thread rather than on main?
+6. Why is a callback breakpoint stronger evidence than a Process Explorer refresh?
+7. What happens to the pending APC when the non-alertable worker exits?
+8. Why does the absence of a new thread in Procmon tell you little about APC delivery?
+9. How do the `SleepEx` return values differ between the two experiments?
+10. How do ordinary user APCs differ from special user APCs and kernel APCs?
 
-Why does the callback count remain zero while the release gate is closed in both examples?
-Why can the alertable two-second sleep return almost immediately?
-What does a successful QueueUserAPC call prove, and what does it not prove?
-Why must main observe actual worker entry before queuing the APC?
-Which observations establish that the alertable callback ran on the target thread rather than on main?
-Why is a callback breakpoint stronger evidence than a Process Explorer refresh?
-What happens to the pending APC when the non-alertable worker exits?
-Why does the absence of a new thread in Procmon tell you little about APC delivery?
-How do the SleepEx return values differ between the two experiments?
-How do ordinary user APCs differ from special user APCs and kernel APCs?
-Official References
-QueueUserAPC
-SleepEx
-Asynchronous Procedure Calls
-InterlockedIncrement
-SetThreadDescription
-Alertable I/O
-WinDbg thread syntax
-x64 calling convention
+## Official references
 
-Lab summary: These two programs isolate one important Windows threading behavior: an ordinary user APC queued to a worker can execute when that worker enters an alertable wait, but it is not delivered merely because the worker is sleeping. Compare the callback count, recorded TID, wait result, and debugger evidence to understand the difference between queuing and execution.
+- [QueueUserAPC](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-queueuserapc)
+- [SleepEx](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-sleepex)
+- [Asynchronous Procedure Calls](https://learn.microsoft.com/en-us/windows/win32/sync/asynchronous-procedure-calls)
+- [InterlockedIncrement](https://learn.microsoft.com/en-us/windows/win32/api/winnt/nf-winnt-interlockedincrement)
+- [SetThreadDescription](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setthreaddescription)
+- [Alertable I/O](https://learn.microsoft.com/en-us/windows/win32/fileio/alertable-i-o)
+- [WinDbg thread syntax](https://learn.microsoft.com/en-us/windows-hardware/drivers/debuggercmds/threads--s---)
+- [x64 calling convention](https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention)
+
+## Key takeaway
+
+**An APC is a callback queued to a thread, not a new thread.** The alertable example shows the callback executing on the existing target thread, while the non-alertable example shows that queuing alone is insufficient. Compare the callback count, recorded TID, wait return value, and debugger evidence to understand the distinction between queuing and execution.
