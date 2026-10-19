@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="HashTableCalculation/HashTableCalculation.vcxproj" />
+  <Project Path="HashTableCalculation/HashTableCalculation.vcxproj" Id="a11225ad-a3c5-4c9d-af4d-f4971106ad7d" />
 </Solution>
