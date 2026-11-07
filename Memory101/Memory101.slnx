@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="Memory101/Memory101.vcxproj" Id="2fc7811c-cdc0-43b7-b760-8231baff748b" />
+</Solution>
