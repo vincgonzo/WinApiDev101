@@ -1,0 +1,8 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="DllSomeInit/DllSomeInit.vcxproj" Id="15a84ab0-d5f3-423f-9831-f5f3948af68c" />
+  <Project Path="SimpleDllClient/SimpleDllClient.vcxproj" Id="1fa08161-26d0-443f-a2fa-a0168fac9b17" />
+</Solution>
