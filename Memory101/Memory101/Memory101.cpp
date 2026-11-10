@@ -7,6 +7,7 @@
 int cell_size = 1024, sizex = 1024, sizey = 1024;
 int main()
 {
+    void* p = HeapAlloc(GetProcessHeap(), 0, 32);
     BYTE* buffer = (BYTE*) VirtualAlloc(nullptr, sizex * sizey * cell_size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     char text[] = "Hello, memory!";
 
